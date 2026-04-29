@@ -1,0 +1,179 @@
+from matplotlib import pyplot as plt
+import numpy as np
+import random
+import math
+import floris.tools.visualization as wakeviz
+from floris.tools import FlorisInterface, WindRose
+from windrose import WindroseAxes
+from floris.tools.layout_functions import visualize_layout
+import pandas as pd
+from datetime import datetime
+
+
+
+import os
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+fi = FlorisInterface("inputs/gch.yaml") # Criando a Interface Floris com valores iniciais importados do arquivo gch.yaml
+wind_rose = WindRose()
+
+
+
+# ==================================================================================================================================
+# Parâmetros do algoritmo genético
+
+COUNT = 10              # Número de repetições de gerações consecutivas para valores de aptidão iguais (CRITÉRIO DE PARADA)
+
+r0=40.0                 # Raio da turbina
+D=2*r0
+
+tabela = []
+
+layout_x=[0, 0, 0, 0]                 # Layout das coordenadas do eixo X
+layout_y=[0., 400., 800., 1200.]          # Layout das coordenadas do eixo Y
+
+wind_directions = [180]
+wind_speeds = [11]
+        
+NUM_TURBINAS = len(layout_x)        # Número de turbinas no parque eólico
+
+# True = Sim ---- False = Não
+plotarWake = False                  # Plotar Efeito de Esteira
+plotarLayout = False                # Plotar Layout do parque
+plotarPotencia = False               # Plotar Histórico de Potência
+plotarPotIndividual = False          # Plotar Potências das turbinas individuais
+printOtimizacao = True              # Print dos valores de potência/ângulos ótimos
+# ==================================================================================================================================
+
+## ================================== Subrotina de calculo de produção total do parque =====================================
+
+def calculo_producao_sem_otimizacao(ws, wd, fi, i):
+    vetor_zerado = np.zeros(NUM_TURBINAS)
+
+    u_points = fi.floris.flow_field.u
+    fi.calculate_wake()
+    
+            
+
+    fi.reinitialize(wind_speeds=[ws[i]], wind_directions=[wd[i]])  # Passando a velocidade e direção do vento atual para o FlorisInterface
+  
+        # Configurando os ângulos de inclinação para todas as turbinas
+    for j in range(len(vetor_zerado)):
+        yaw_angles[0,0,j] = vetor_zerado[j]
+            
+        fi.calculate_wake(yaw_angles=yaw_angles)
+        farm_power = fi.get_farm_power()
+    producao_total = np.sum(farm_power/1e3)
+    return producao_total
+
+
+def calculo_producao_total(num_turbinas, individuo, ws, wd, fi, i):
+
+    u_points = fi.floris.flow_field.u
+    fi.calculate_wake()
+    
+            
+    fi.reinitialize(wind_speeds=[ws[i]], wind_directions=[wd[i]])  # Passando a velocidade e direção do vento atual para o FlorisInterface
+  
+        # Configurando os ângulos de inclinação para todas as turbinas
+    for j in range(len(individuo)):
+        yaw_angles[0,0,j] = individuo[j]
+            
+        fi.calculate_wake(yaw_angles=yaw_angles)
+        farm_power = fi.get_farm_power()
+    producao_total = np.sum(farm_power/1e3)
+    return producao_total
+
+
+## ============================================ =============================================================================
+
+
+
+
+## ============================================ PARÂMETROS DE SIMULAÇÃO ===========================================
+
+fi.reinitialize(layout_x=layout_x, layout_y=layout_y)  # Layout do parque
+turbine_name = []  # Lista para armazenar os nomes das turbinas
+
+for i in range(len(fi.layout_x)):       # Laço para nomear as turbinas no formato 'T01' usando o length do layout
+    turbine_name.append('T{:02d}'.format(i+1))
+    
+D = 126.0 # Diâmetro do rotor NREL 5 MW
+fi.reinitialize(wind_directions=wind_directions)
+num_wd = len(wind_directions)  # Quantidade de posições do vetor: Wind Directions
+num_ws = len(wind_speeds)  # Quantidade de posições do vetor: Wind 
+num_turbine = len(fi.layout_x)  # Quantidade de turbinas no parque eólico
+yaw_angles = np.zeros((1, 1, num_turbine))
+melhor_yaw_historico = np.zeros((1, len(wind_speeds), num_turbine))
+
+TAMANHO=11
+Passo=5
+potencia = np.zeros((TAMANHO, len(wind_speeds)))
+potIndividual = np.zeros((TAMANHO, len(wind_speeds),len(fi.layout_x)))
+melhor_potencia= np.zeros(len(wind_speeds))
+indice_melhor_individuo = np.zeros(len(wind_speeds))
+melhor_individuo = [[0, 0, 0, 0] for _ in range(len(wind_speeds))]
+populacao = []
+
+indices = [0] * NUM_TURBINAS
+
+angulo = 0
+for j in range(0, 20, 5):
+    for k in range(0, 20, 5):    
+        for l in range(0, 20, 5):
+            for m in range(0, 20, 5):
+            #for n in range(0, 50, 5):
+                individuo = [j, k, l, m]
+                populacao.append(individuo)
+                yaw_angles[0,0,:] = individuo
+                producao_total = np.zeros(len(wind_directions))
+                #print(individuo)
+                
+                for i in range(len(wind_speeds)):
+                    producao_total[i]=calculo_producao_total(num_turbine, yaw_angles[0,0,:], wind_speeds, wind_directions, fi, i)
+                    #print(f"\n ========  Vento: {wind_speeds[i]}m/s | Direção: {wind_directions[i]}° ======== ")
+                    print(f"Indivíduo: [{yaw_angles[0,0,:]}], Fitness = {producao_total[i]:.2f} kW")
+                    potencia[0, i] = producao_total[i]
+                    potIndividual[0,i] = fi.get_turbine_powers() / 1000  # Convertendo para kW
+                    melhor_potencia[i]=max(potencia[:,i]) # Armazena os valores de maior potência para cada caso de vento
+                    indice_melhor_individuo[i] = np.argmax(potencia[:,i]) # Obtém o indice da maior potencia para cada caso de vento
+                
+                    melhor_individuo[i] = populacao[int(indice_melhor_individuo[i])]  # Atribui a linha correta de populacao
+                    
+                    tabela.append(individuo + [producao_total[i]])
+                    
+                    for i in reversed(range(NUM_TURBINAS)):
+                        if indices[i] + 1 < len(individuo):
+                            indices[i] += 1
+                            break
+                        else:
+                            indices[i] = 0
+                    else:
+                        break
+print(potencia)
+                       
+# Cria tabela
+df = pd.DataFrame(tabela, columns=[
+    "T1", "T2", "T3", "T4", "Producao"
+])
+# Exporta para Excel
+df.to_excel("tabela.xlsx", index=False)
+         
+
+if(printOtimizacao):
+    Ganho = []
+    print("")
+    for i in range(len(wind_speeds)):
+        print(f'Melhor combinação de ângulos: {melhor_individuo[i]} --> {wind_speeds[i]}m/s | Direção: {wind_directions[i]}° - Produção: {melhor_potencia[i]:.2f} kW')
+        print(f'Ganho: {potencia[0,i]:.2f} kW para {melhor_potencia[i]:.2f} kW --> +{(melhor_potencia[i]/potencia[0,i]-1)*100:.2f}%') #Ganho em relação aos ângulos zerados
+        print('')
+        
+
+
+    
+# Exibir o gráfico
+plt.grid(True)
+plt.show()
+    
+print()
+print()

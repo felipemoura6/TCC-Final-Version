@@ -1,0 +1,436 @@
+from matplotlib import pyplot as plt
+import numpy as np
+import random
+import math
+import floris.tools.visualization as wakeviz
+from floris.tools import FlorisInterface, WindRose
+from windrose import WindroseAxes
+from floris.tools.layout_functions import visualize_layout
+import csv
+from datetime import datetime
+import time
+
+
+import os
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+fi = FlorisInterface("inputs/gch.yaml") # Criando a Interface Floris com valores iniciais importados do arquivo gch.yaml
+wind_rose = WindRose()
+# Nome do arquivo de texto
+arquivo1 = 'Dados_2023.CSV'
+arquivo2 = 'Testes.CSV'
+arquivo3 = 'Teste_Dados_Reduced.CSV'
+
+# Listas para armazenar os valores das colunas
+data = []
+hora = []
+wind_speeds = []
+wind_directions = []
+wmax = []
+
+# Abra o arquivo e leia as colunas desejadas
+with open(arquivo2, 'r', encoding='utf-8') as arquivo:
+    leitor_csv = csv.reader(arquivo, delimiter=';')
+    for linha in leitor_csv:
+        # Se houver pelo menos cinco colunas na linha
+        if len(linha) >= 5:
+            # Adicione os valores da quarta e da quinta colunas aos vetores
+            data.append((linha[0]))  # Data
+            hora.append((linha[1]))  # Hora
+            wind_speeds.append(float(linha[18]))  # Vento
+            wind_directions.append(float(linha[16])) # Direção em graus
+            wmax.append((linha[17])) # Velocidade média do vento
+
+#print(wind_directions)
+# Converter para o formato de data e hora
+x_values = np.arange(len(data)) # Cria o vetor do eixo x com os dados das datas
+hora_sem_utc = [h.replace(' UTC', '') for h in hora]
+hora_formatada = [h.zfill(4)[:2] + ':' + h.zfill(4)[2:] for h in hora_sem_utc]  # Coloca a hora no formato HH:MM
+datas_horas = [datetime.strptime(data[i] + " " + h, "%Y/%m/%d %H:%M") for i, h in enumerate(hora_formatada)] # Adiciona a data com a hora
+
+
+
+# ==================================================================================================================================
+# Parâmetros do algoritmo genético
+
+TAM_POPULACAO = 20      # Quantidade de indivíduos na população
+NUM_GERACAO = 20       # Quantidade de gerações
+TAXA_MUTACAO = 0.1       # Taxa de mutação
+YAW_MIN = -30             # Ângulo mínimo do yaw
+YAW_MAX = 30              # Ângulo máximo do yaw
+COUNT = 10              # Número de repetições de gerações consecutivas para valores de aptidão iguais (CRITÉRIO DE PARADA)
+
+r0=40.0         # Raio da turbina
+D=2*r0
+
+
+
+x = np.array([0, 560, 1120, 1680, 2240, 2800, 3360, 3920, 4480, 5040])
+y = np.array([0, 560, 1120, 1680, 2240, 2800, 3360, 3920])
+
+X, Y = np.meshgrid(x, y)
+
+coords_x = X.flatten()
+coords_y = Y.flatten()
+
+#layout_y=[0, 0, 0, 0, 400, 400, 400, 400]                 # Layout das coordenadas do eixo X
+#layout_x=[0., 100., 200., 300, 0., 100., 200., 300]          # Layout das coordenadas do eixo Y
+
+layout_y=coords_x
+layout_x=coords_y 
+        
+NUM_TURBINAS = len(layout_x)        # Número de turbinas no parque eólico
+farm_powers = np.zeros(len(wind_directions))  # Inicializa um array para armazenar as potências
+historico_powers = np.zeros((NUM_GERACAO+1, len(wind_directions)))
+
+# True = Sim ---- False = Não
+plotarWake = True              # Plotar Efeito de Esteira
+plotarOtimizacao = True        # Plotar Gráfico da otimização ao longo das gerações
+printAG = True                 # Prints do Algoritmo Genético
+plotarLayout = False            # Plotar Layout do parque
+plotarPotencia = True          # Plotar Histórico de Potência
+# ==================================================================================================================================
+
+## ================================== Subrotina de calculo de produção total do parque =====================================
+
+def calculo_producao_sem_otimizacao(ws, wd, fi, i):
+    vetor_zerado = np.zeros(NUM_TURBINAS)
+
+    u_points = fi.floris.flow_field.u
+    fi.calculate_wake()
+    
+    fi.reinitialize(wind_speeds=[ws[i]], wind_directions=[wd[i]])  # Passando a velocidade e direção do vento atual para o FlorisInterface
+  
+        # Configurando os ângulos de inclinação para todas as turbinas
+    for j in range(len(vetor_zerado)):
+        yaw_angles[0,0,j] = vetor_zerado[j]
+            
+        fi.calculate_wake(yaw_angles=yaw_angles)
+        farm_power = fi.get_farm_power()
+    producao_total = np.sum(farm_power/1e3)
+    return producao_total
+
+
+def calculo_producao_total(num_turbinas, individuo, ws, wd, fi, i):
+
+    u_points = fi.floris.flow_field.u
+    fi.calculate_wake()
+    
+            
+
+    fi.reinitialize(wind_speeds=[ws[i]], wind_directions=[wd[i]])  # Passando a velocidade e direção do vento atual para o FlorisInterface
+  
+        # Configurando os ângulos de inclinação para todas as turbinas
+    for j in range(len(individuo)):
+        yaw_angles[0,0,j] = individuo[j]
+            
+        fi.calculate_wake(yaw_angles=yaw_angles)
+        farm_power = fi.get_farm_power()
+    producao_total = np.sum(farm_power/1e3)
+    return producao_total
+
+
+## ============================================ =============================================================================
+
+
+## ======================================== IMPRIME RESULTADOS ===================================================
+
+def imprime_resultados(num_turbinas, vet_yaw, wind_speeds, wind_directions, fi, potencia_parque):
+    print("")
+
+
+    # Cabeçalho
+    cabeçalho = "| {:<19} | {:<18} |".format("DATA - HORA", "VENTO")
+    for i in range(1, len(turbine_name) + 1):  # Para cada turbina
+        cabeçalho += " {:<7} |".format(f"T{i}")
+    cabeçalho += " {:<7} |".format("Ganho (%)")
+    print(cabeçalho)
+
+    # Linha de separação para visualização
+    print("-" * len(cabeçalho))
+
+    # Resultados
+    for i in range(len(wind_speeds)):
+        
+    # Data e hora formatados
+        row = "| {:<19} | {:<18} |".format(f"{data[i]} - {hora_formatada[i]}", f"{wind_speeds[i]}m/s / {wind_directions[i]}°")
+        
+        # Verificando se o índice i está dentro dos limites de vet_yaw
+        if i < len(vet_yaw[0]):
+            for yaw in vet_yaw[0, i, :]:  # vet_yaw[0, i, :] acessa os parâmetros da turbina i
+                row += " {:<6.2f}° |".format(yaw)  # Formata cada valor individualmente
+            ganho = (potencia_parque[-1, i] / potencia_parque[0, i]-1)*100
+            row += " + {:<6.2f}% |".format(ganho)
+        else:
+            # Caso vet_yaw não tenha elementos suficientes para o índice i, avise ou defina um valor padrão
+            row += " {:<6} |".format("N/A")  # Indica que não há valor para essa turbina
+        
+        print(row)
+        
+
+
+    # Linha de separação após os dados
+    print("=" * len(cabeçalho))
+
+
+## =========================================================================================================================
+
+
+# Inicialização da população
+def populacao_inicial():
+    
+    # Cria a população inicial com ângulos yaw aleatórios para cada turbina.
+    populacao = []
+    for i in range(TAM_POPULACAO):
+        # Cada indivíduo é um vetor de ângulos yaw (aleatórios entre YAW_MIN e YAW_MAX)
+        individuo = [random.uniform(YAW_MIN, YAW_MAX) for j in range(NUM_TURBINAS)]
+        populacao.append(individuo)
+    print("")
+    
+    return populacao
+
+# Seleção por torneio
+def selecao(populacao, fitness_scores): 
+    """
+    Seleciona dois pais da população via seleção por torneio.
+    """
+    # Escolha de dois indivíduos aleatoriamente e selecionando o melhor
+    tamanho_selecao = 10
+    selected = random.sample(range(TAM_POPULACAO), tamanho_selecao)
+    melhor_individual = max(selected, key=lambda x: fitness_scores[x])
+    return populacao[melhor_individual]
+
+
+
+# Cruzamento (Crossover)
+def crossover(pai1, pai2):
+    """
+    pai1 = [-10, 5, 20]
+    pai2 = [15, -5, 30]
+    NUM_TURBINAS = 3
+    Se o ponto de cruzamento selecionado for 1, o descendente será gerado como:
+
+    Primeira parte do filho (até o ponto de cruzamento) vem de pai1: [-10]
+    Segunda parte do filho (a partir do ponto de cruzamento) vem de pai2: [-5, 30]
+              0    1   2
+    filho = [-10, -5, 30]
+    """
+    
+    crossover_point = random.randint(0, NUM_TURBINAS-1) # 0, 1 ou 2
+    filho = pai1[:crossover_point] + pai2[crossover_point:]
+    return filho
+
+# Mutação
+def mutacao(individuo):
+    """
+    Aplica mutação em um indivíduo.
+    """
+    for i in range(NUM_TURBINAS):
+        if random.random() < TAXA_MUTACAO:
+            individuo[i] = random.uniform(YAW_MIN, YAW_MAX)
+    return individuo
+
+
+# Algoritmo Genético
+def genetic_algorithm():
+    
+    # Itera para calculo de potência com todos ângulos zerados e armazena na primeira posição do vetor de potência
+    for i in range(len(wind_speeds)):
+        historico_powers[0,i]=calculo_producao_sem_otimizacao(wind_speeds,wind_directions,fi,i)
+        #print(calculo_producao_sem_otimizacao(wind_speeds,wind_directions,fi,i))
+        
+    # Itera para cada valor da velocidade do vento lida pelo .csv
+    for i in range(len(wind_speeds)):
+        
+        populacao = populacao_inicial()     # Inicializa a população
+        melhor_fitness_anterior = 0
+        count = 0
+        melhor_fitness_historico=[]
+        
+        if(printAG==True):
+            print(f"\n ========  Vento: {wind_speeds[i]}m/s | Direção: {wind_directions[i]}° ======== ")
+        
+        # Itera por n gerações    
+        for geracao in range(NUM_GERACAO):
+            if(printAG==True):
+                print(f"\nGeração {geracao + 1}:")
+                print("População e Aptidão:")
+
+            # Calcula a aptidão de cada indivíduo
+            fitness_scores = [calculo_producao_total(num_turbine, individuo, wind_speeds, wind_directions, fi, i) for individuo in populacao]
+            
+            # Itera e imprime cada indivíduo com uma numeração e sua aptidão
+            for indice, (individuo, score) in enumerate(zip(populacao, fitness_scores), start=1):
+                angulos_formatados = ", ".join(f"{angulo:.3f}°" for angulo in individuo)
+                if(printAG): print(f"Indivíduo {indice}: [{angulos_formatados}], Fitness = {score:.2f} kW")
+            
+            # Encontra o melhor indivíduo da geração
+            melhor_fitness = max(fitness_scores)
+            farm_powers[i] = np.squeeze(melhor_fitness)   # Convertendo para kW e salvando o valor na posição atual de farm_powers
+            historico_powers[geracao+1,i]=melhor_fitness
+            melhor_individuo = populacao[fitness_scores.index(melhor_fitness)]
+            melhor_fitness_historico.append(melhor_fitness)
+            
+            if(printAG):
+                individuo_formatado = ", ".join(f"{angulos:.3f}" for angulos in melhor_individuo)
+                print("Melhor aptidão = {:.2f}, Melhor indivíduo = [{}]".format(melhor_fitness, individuo_formatado))
+            
+            # Critério de parada: verifica se a aptidão está saturada
+            if melhor_fitness == melhor_fitness_anterior:
+                count += 1
+            else:
+                count = 0
+            melhor_fitness_anterior = melhor_fitness
+
+            # Se a aptidão não alterar por COUNT gerações consecutivas
+            if count >= COUNT:
+                print(f"\nCritério de parada alcançado: Melhor aptidão não melhorou por {COUNT} gerações consecutivas.")
+                break
+            
+            # Nova população
+            nova_populacao = []
+            
+            # Mantém o melhor indivíduo (elitismo)
+            nova_populacao.append(melhor_individuo)
+            
+            # Gera novos indivíduos
+            while len(nova_populacao) < TAM_POPULACAO:
+                # Seleciona dois pais
+                pai1 = selecao(populacao, fitness_scores)
+                pai2 = selecao(populacao, fitness_scores)
+                
+                # Realiza o cruzamento
+                filho = crossover(pai1, pai2)
+                
+                # Aplica a mutação
+                filho = mutacao(filho)
+                
+                # Adiciona o novo indivíduo à nova população
+                nova_populacao.append(filho)
+            
+            # Substitui a população antiga pela nova
+            populacao = nova_populacao
+            #print(melhor_individuo)
+        # Melhor solução final encontrada
+        if(printAG==True):
+            print("\nMelhor configuração de ângulos yaw encontrada:", individuo_formatado)
+            print(f'Aptidão da melhor solução:, {melhor_fitness:.2f}', "kW")
+            melhor_yaw_historico[0,i,:] = melhor_individuo
+        
+        # Plotando gráfico da otimização
+        if(plotarOtimizacao==True):
+            plt.plot(melhor_fitness_historico, marker='o', linestyle='-', color='b')
+            plt.xlabel(f'Valor Final = {max(melhor_fitness_historico):.2f} kW') # Colocando o maior valor otimizado
+            plt.ylabel('Melhor Aptidão (kW)')
+            plt.title('Evolução da Aptidão ao Longo das Gerações')
+            plt.grid(True)
+
+print()
+print('=' * 100)
+
+
+
+## ============================================ PARÂMETROS DE SIMULAÇÃO ===========================================
+
+fi.reinitialize(layout_x=layout_x, layout_y=layout_y)  # Layout do parque
+turbine_name = []  # Lista para armazenar os nomes das turbinas
+
+for i in range(len(fi.layout_x)):       # Laço para nomear as turbinas no formato 'T01' usando o length do layout
+    turbine_name.append('T{:02d}'.format(i+1))
+    
+D = 126.0 # Diâmetro do rotor NREL 5 MW
+fi.reinitialize(wind_directions=wind_directions)
+num_wd = len(wind_directions)  # Quantidade de posições do vetor: Wind Directions
+num_ws = len(wind_speeds)  # Quantidade de posições do vetor: Wind 
+num_turbine = len(fi.layout_x)  # Quantidade de turbinas no parque eólico
+yaw_angles = np.zeros((1, 1, num_turbine))
+melhor_yaw_historico = np.zeros((1, len(wind_speeds), num_turbine))
+genetic_algorithm() 
+
+imprime_resultados(num_turbine, melhor_yaw_historico, wind_speeds, wind_directions, fi, historico_powers)
+print(f"\nFIM")
+
+# Definir as coordenadas dos pontos
+x = layout_x  # Coordenadas x dos pontos
+y = layout_y  # Coordenadas y dos pontos
+
+limitEsquerdoX = np.array(layout_x) - r0    # Posição do limite esquerdo das turbinas
+limitDireitoX = np.array(layout_x) + r0     # Posição do limite direito das turbinas
+
+cores = ['red', 'blue', 'green']    # Definindo as cores para cada turbina
+
+# Plotar as turbinas
+if(plotarLayout):
+    plt.scatter(x, y, color="blue", label='Turbinas')
+    plt.scatter(limitEsquerdoX, y, color="red", label='Limite pá')
+    plt.scatter(limitDireitoX, y, color="red")
+    # Adicionar rótulos ao gráfico
+    plt.title('Parque 2D')
+    plt.xlabel('Eixo X')
+    plt.ylabel('Eixo Y')
+
+    # Exibir a legenda
+    plt.legend()
+
+if(plotarWake):
+    for i in range(len(wind_speeds)):
+        horizontal_plane1 = fi.calculate_horizontal_plane(
+            x_resolution=200,
+            y_resolution=100,
+            height=90.0,
+            yaw_angles=np.array([[np.zeros(NUM_TURBINAS)]]),    #Vetor de ângulos zerado
+        )
+        
+        horizontal_plane2 = fi.calculate_horizontal_plane(
+            x_resolution=200,
+            y_resolution=100,
+            height=90.0,
+            yaw_angles=np.array([[linha[i] for linha in melhor_yaw_historico]]),    #Vetor de ângulos otimizado para linha i
+        )
+
+        # # Create the plots
+        fig, ax_list = plt.subplots(2, 1, figsize=(10, 8))
+        ax_list = ax_list.flatten()
+        title = f"Vento: {wind_speeds[i]}m/s - {wind_directions[i]}° - Produção: {farm_powers[i]:.2f}kW"
+        wakeviz.visualize_cut_plane(
+            horizontal_plane1,
+            ax=ax_list[0],
+            label_contours=True,
+            title="Horizontal - (Normal)"
+        )
+        
+        wakeviz.visualize_cut_plane(
+            horizontal_plane2,
+            ax=ax_list[1],
+            label_contours=True,
+            title="Horizontal - (Otimizado)"
+        )
+        
+        # título geral para a figura
+        fig.suptitle(title, fontsize=14, weight="bold")
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # evita sobreposição do título
+        
+if(plotarPotencia):
+    linhas, colunas = historico_powers.shape
+    x = np.arange(linhas)  # eixo x = índice da linha
+
+    plt.figure(figsize=(10,6))
+
+    # Plota cada coluna como uma curva
+    for j in range(colunas):
+        plt.plot(x, historico_powers[:, j], marker='o', label=f'Vento: {wind_speeds[j]}m/s - {wind_directions[j]}°')
+
+    plt.xlabel("Geração")
+    plt.ylabel("Potência")
+    plt.title("Curvas de potência")
+    plt.legend()
+
+
+    
+# Exibir o gráfico
+plt.grid(True)
+plt.show()
+    
+print()
+print()
